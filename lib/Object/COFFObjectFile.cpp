@@ -429,6 +429,22 @@ error_code COFFObjectFile::getVaPtr(uint64_t Addr, uintptr_t &Res) const {
   return getRvaPtr((uint32_t)Rva, Res);
 }
 
+error_code  COFFObjectFile::getMethodSize(uintptr_t method, unsigned int &size) const {
+	uint8_t * reader = (uint8_t*) method;
+	uint8_t buff = *reader;
+	if(((buff)&0x3)==0x2){
+		size = buff>>2;
+		size+=1; // tiny header size
+		return object_error::success;
+	}if(((buff)&0x3)==0x3){
+		int * buffer = (int*)(method+4);
+		size = *buffer;
+		size += 12; // fat header size
+		return object_error::success;
+	}
+	return object_error::parse_failed;
+}
+
 // Returns the file offset for the given RVA.
 error_code COFFObjectFile::getRvaPtr(uint32_t Addr, uintptr_t &Res) const {
   for (section_iterator I = section_begin(), E = section_end(); I != E;
@@ -484,6 +500,292 @@ error_code COFFObjectFile::initImportTablePtr() {
   return object_error::success;
 }
 
+bool COFFObjectFile::isPureCil(){
+	return CLRHeader != NULL ;//&& CLRMeta != NULL;
+}
+
+// Find the CLRHeader.
+error_code COFFObjectFile::initCLRHeaderPtr() {
+  // First, we get the RVA of the import table. If the file lacks a pointer to
+  // the import table, do nothing.
+  const data_directory *DataEntry;
+  if (getDataDirectory(COFF::CLR_RUNTIME_HEADER, DataEntry))
+    return object_error::success;
+
+  // Do nothing if the pointer to import table is NULL.
+  if (DataEntry->RelativeVirtualAddress == 0)
+    return object_error::success;
+
+  uint32_t CLRHeaderRva = DataEntry->RelativeVirtualAddress;
+  //NumberOfImportDirectory = DataEntry->Size /
+  //    sizeof(import_directory_table_entry);
+
+  // Find the section that contains the RVA. This is needed because the RVA is
+  // the import table's memory address which is different from its file offset.
+  uintptr_t IntPtr = 0;
+  if (error_code EC = getRvaPtr(CLRHeaderRva, IntPtr))
+    return EC;
+  //getObject(CLRHeader,Data,
+  CLRHeader = reinterpret_cast<
+      const clr_header *>(IntPtr);
+  uint32_t MetadataRva = CLRHeader->MetadataRVA;
+  if(MetadataRva == 0)
+	  return object_error::success;
+  uintptr_t MetadataIntPtr = 0;
+  if (error_code EC = getRvaPtr(MetadataRva, MetadataIntPtr))
+    return EC;
+  initMetadataPtr(MetadataIntPtr,&MetadataHeader);
+  return object_error::success;
+}
+
+// fix with some fancy trick
+unsigned int fixsize(unsigned int versionsize){
+	for(;;)
+		if(versionsize%4==0)
+			return versionsize;
+		else 
+			versionsize++;
+}
+
+unsigned int countbits(uint64_t bitvector){
+	unsigned int count = 0;
+	long long int tracker = 1;
+	for(int i=0;i<sizeof(bitvector)*8;i++)
+		if(bitvector&(tracker<<i))
+			count++;
+	return count;
+}
+
+void llvm::object::setupTablePointers(uintptr_t MetadataIntPtr, llvm::object::clrmeta_header *MHeader){
+	uint64_t Valid = MHeader->MetaTables->Valid;
+	clrtables::clrTablePtr *ptr = &MHeader->MetaTables->tablePtr;
+	ulittle32_t *rows = MHeader->MetaTables->Rows;
+	uint64_t mark = 1;
+	uint64_t table = 0;
+	if(Valid&(mark<<0x00)){ // Module -- 0x00
+		ptr->Module = reinterpret_cast<clrtables::module*>(MetadataIntPtr);
+		ptr->ModuleSize = rows[table];
+		MetadataIntPtr+=(sizeof(clrtables::module)*rows[table++]);
+	}
+	if(Valid&(mark<<0x01)){ // TypeRef -- 0x01
+		ptr->TypeRef = reinterpret_cast<clrtables::typeRef*>(MetadataIntPtr);
+		ptr->TypeRefSize = rows[table];
+		MetadataIntPtr+=(sizeof(clrtables::typeRef)*rows[table++]);
+	}
+	if(Valid&(mark<<0x02)){ // TypeDef -- 0x02
+		ptr->TypeDef = reinterpret_cast<clrtables::typeDef*>(MetadataIntPtr);
+		ptr->TypeDefSize = rows[table];
+		MetadataIntPtr+=(sizeof(clrtables::typeDef)*rows[table++]);
+	}
+	if(Valid&(mark<<0x04)){ // Field -- 0x04
+		assert(1==0 && "Field -- 0x04" );
+	}
+	if(Valid&(mark<<0x06)){ // MethodDef -- 0x06
+		ptr->MethodDef = reinterpret_cast<clrtables::methodDef*>(MetadataIntPtr);
+		ptr->MethodDefSize = rows[table];
+		MetadataIntPtr+=(sizeof(clrtables::methodDef)*rows[table++]);
+	}
+	if(Valid&(mark<<0x08)){ // Param -- 0x08
+		assert(1==0 && "Param -- 0x08" );
+	}
+	if(Valid&(mark<<0x09)){ // InterfaceImpl -- 0x09
+		assert(1==0 && "InterfaceImpl -- 0x09" );
+	}
+	if(Valid&(mark<<0x0a)){ // MemberRef -- 0x0a
+		ptr->MemberRef = reinterpret_cast<clrtables::memberRef*>(MetadataIntPtr);
+		ptr->MemberRefSize = rows[table];
+		MetadataIntPtr+=(sizeof(clrtables::memberRef)*rows[table++]);
+	}
+	if(Valid&(mark<<0x0b)){ // Constant -- 0x0b
+		assert(1==0 && "Constant -- 0x0b" );
+	}
+	if(Valid&(mark<<0x0c)){ // CustomAttribute -- 0x0c
+		assert(1==0 && "CustomAttribute -- 0x0c" );
+	}
+	if(Valid&(mark<<0x0d)){ // FieldMarshal -- 0x0d
+		assert(1==0 && "FieldMarshal -- 0x0d" );
+	}
+	if(Valid&(mark<<0x0e)){ // DeclSecurity -- 0x0e
+		assert(1==0 && "DeclSecurity -- 0x0e" );
+	}
+	if(Valid&(mark<<0x0f)){ // ClassLayout -- 0x0f
+		assert(1==0 && " ClassLayout -- 0x0f" );
+	}
+	if(Valid&(mark<<0x10)){ // FieldLayout -- 0x10
+		assert(1==0 && "FieldLayout -- 0x10" );
+	}
+	if(Valid&(mark<<0x11)){ // StandAloneSig -- 0x11
+		ptr->StandAloneSig = reinterpret_cast<clrtables::standAloneSig*>(MetadataIntPtr);
+		ptr->StandAloneSigSize = rows[table];
+		MetadataIntPtr+=(sizeof(clrtables::standAloneSig)*rows[table++]);
+	}
+	if(Valid&(mark<<0x12)){ // EventMap -- 0x12
+		assert(1==0 && "EventMap -- 0x12" );
+	}
+	if(Valid&(mark<<0x14)){ // Event -- 0x14
+		assert(1==0 && "Event -- 0x14" );
+	}
+	if(Valid&(mark<<0x15)){ // PropertyMap -- 0x15
+		assert(1==0 && "PropertyMap -- 0x15" );
+	}
+	if(Valid&(mark<<0x17)){ // Property -- 0x17
+		assert(1==0 && "Property -- 0x17" );
+	}
+	if(Valid&(mark<<0x18)){ // MethodSemantics -- 0x18
+		assert(1==0 && "MethodSemantics -- 0x18" );
+	}
+	if(Valid&(mark<<0x19)){ // MethodImpl -- 0x19
+		assert(1==0 && " MethodImpl -- 0x19" );
+	}
+	if(Valid&(mark<<0x1a)){ // ModuleRef -- 0x1a
+		assert(1==0 && "ModuleRef -- 0x1a" );
+	}
+	if(Valid&(mark<<0x1b)){ // TypeSpec -- 0x1b
+		assert(1==0 && "TypeSpec -- 0x1b" );
+	}
+	if(Valid&(mark<<0x1c)){ // ImplMap -- 0x1c
+		assert(1==0 && "ImplMap -- 0x1c" );
+	}
+	if(Valid&(mark<<0x1d)){ // FieldRVA -- 0x1d
+		assert(1==0 && " FieldRVA -- 0x1d" );
+	}
+	if(Valid&(mark<<0x20)){ // Assembly -- 0x20
+		assert(1==0 && "Assembly -- 0x20" );
+	}
+	if(Valid&(mark<<0x21)){ // AssemblyProcessor -- 0x21
+		assert(1==0 && "AssemblyProcessor -- 0x21" );
+	}
+	if(Valid&(mark<<0x22)){ // AssemblyOS -- 0x22
+		assert(1==0 && "AssemblyOS -- 0x22" );
+	}
+	if(Valid&(mark<<0x23)){ // AssemblyRef -- 0x23
+		ptr->AssemblyRef = reinterpret_cast<clrtables::assemblyRef*>(MetadataIntPtr);
+		ptr->AssemblyRefSize = rows[table];
+		MetadataIntPtr+=(sizeof(clrtables::assemblyRef)*rows[table++]);
+	}
+	if(Valid&(mark<<0x24)){ // AssemblyRefProcessor -- 0x24
+		assert(1==0 && "AssemblyRefProcessor -- 0x24" );
+	}
+	if(Valid&(mark<<0x25)){ // AssemblyRefOS -- 0x25
+		assert(1==0 && "AssemblyRefOS -- 0x25" );
+	}
+	if(Valid&(mark<<0x26)){ // File -- 0x26
+		assert(1==0 && "File -- 0x26" );
+	}
+	if(Valid&(mark<<0x27)){ // ExportedType -- 0x27
+		assert(1==0 && "ExportedType -- 0x27" );
+	}
+	if(Valid&(mark<<0x28)){ // ManifestResource -- 0x28
+		assert(1==0 && "ManifestResource -- 0x28" );
+	}
+	if(Valid&(mark<<0x29)){ // NestedClass -- 0x29
+		assert(1==0 && "NestedClass -- 0x29" );
+	}
+	if(Valid&(mark<<0x2a)){ // GenericParam -- 0x2a
+		assert(1==0 && "GenericParam -- 0x2a" );	
+	}
+	if(Valid&(mark<<0x2b)){ // MethodSpec -- 0x2b
+		assert(1==0 && "MethodSpec -- 0x2b" );
+	}
+	if(Valid&(mark<<0x2c)){ // GenericParamConstraint -- 0x2c
+		assert(1==0 && " GenericParamConstraint -- 0x2c" );
+	}
+}
+
+error_code llvm::object::initMetadataTablesSetup(llvm::object::clrmeta_header *MHeader){
+	uintptr_t MetadataIntPtr = MHeader->MetadataInitPtr;
+	support::ulittle32_t* little32 = 0;
+	support::ulittle16_t* little16 = 0;
+	support::ulittle64_t* little64 = 0;
+	support::ulittle8_t* little8 = 0;
+	clrmeta_tables_head * tabs = NULL;
+	MHeader->MetaTables = (clrmeta_tables_head*) calloc (1,sizeof(clrmeta_tables_head));
+	tabs = MHeader->MetaTables;
+	for(int i=0; i<MHeader->Streams;i++){
+		if(strcmp(MHeader->StreamHeaders[i].name,"#~")==0){
+			MetadataIntPtr += MHeader->StreamHeaders[i].offset;
+			break;
+		}
+	}
+	if(MetadataIntPtr==MHeader->MetadataInitPtr) // there are no metadata tables
+		return object_error::success;				  // is this an error?
+	MetadataIntPtr+=sizeof(tabs->Reserved); // reserved
+	little8 = reinterpret_cast<support::ulittle8_t*>(MetadataIntPtr);
+	MetadataIntPtr+=sizeof(tabs->MajorVersion);
+	tabs->MajorVersion = *little8;
+	little8 = reinterpret_cast<support::ulittle8_t*>(MetadataIntPtr);
+	MetadataIntPtr+=sizeof(tabs->MinorVersion);
+	tabs->MinorVersion = *little8;
+	little8 = reinterpret_cast<support::ulittle8_t*>(MetadataIntPtr);
+	MetadataIntPtr+=sizeof(tabs->heapsizes);
+	tabs->heapsizes = *little8;
+	MetadataIntPtr+=sizeof(tabs->Reservedbyte);
+	little64 = reinterpret_cast<support::ulittle64_t*>(MetadataIntPtr);
+	MetadataIntPtr+=sizeof(tabs->Valid);
+	tabs->Valid = *little64;
+	little64 = reinterpret_cast<support::ulittle64_t*>(MetadataIntPtr);
+	MetadataIntPtr+=sizeof(tabs->Sorted);
+	tabs->Sorted = *little64;
+	
+	uint64_t Valid = tabs->Valid;
+	unsigned int tables = countbits(Valid);
+	tabs->Rows=(support::ulittle32_t*) malloc(sizeof(support::ulittle32_t)*tables);
+	for(unsigned int i=0;i<tables;i++){
+		little32 = reinterpret_cast<support::ulittle32_t*>(MetadataIntPtr);
+		MetadataIntPtr+=sizeof(tabs->Rows[0]);
+		tabs->Rows[i]=*little32;
+	}
+	setupTablePointers(MetadataIntPtr, MHeader);
+	return object_error::success;
+}
+
+// we cannot use the reinterpret cast because we cannot use the memory directly 
+// as the version string is the actual string (with variable length) and not a pointer to it.
+error_code llvm::object::initMetadataPtr(uintptr_t MetadataIntPtr,llvm::object::clrmeta_header **MH){
+	*MH=(clrmeta_header*)calloc(1,sizeof(clrmeta_header));
+	clrmeta_header* MHeader = *MH;
+	support::ulittle32_t* little32 = 0;
+	support::ulittle16_t* little16 = 0;
+	MHeader->MetadataInitPtr = MetadataIntPtr;
+	little32 = reinterpret_cast<support::ulittle32_t*>(MetadataIntPtr);
+	MetadataIntPtr+=sizeof(MHeader->Signature);
+	MHeader->Signature=*little32;
+	MHeader->MajorRuntimeVersion = 1;
+	MetadataIntPtr+=sizeof(MHeader->MajorRuntimeVersion);
+	MHeader->MinorRuntimeVersion = 1;
+	MetadataIntPtr+=sizeof(MHeader->MinorRuntimeVersion);
+	MHeader->Reserved = 0;
+	MetadataIntPtr+=sizeof(MHeader->Reserved);
+	little16 = reinterpret_cast<support::ulittle16_t*>(MetadataIntPtr);
+	MetadataIntPtr+=sizeof(MHeader->Length);
+	MHeader->Length = *little16;
+	unsigned int strsize = *little16;
+	strsize = fixsize(strsize);
+	MHeader->Version = (char*) MetadataIntPtr;
+	MetadataIntPtr+= strsize;
+	little16 = reinterpret_cast<support::ulittle16_t*>(MetadataIntPtr);
+	MetadataIntPtr+=sizeof(MHeader->Flags);
+	MHeader->Flags = *little16;
+	little16 = reinterpret_cast<support::ulittle16_t*>(MetadataIntPtr);
+	MetadataIntPtr+=sizeof(MHeader->Streams);
+	MHeader->Streams = *little16;
+	MHeader->StreamHeaders = (clrstream_header*)malloc(sizeof(clrstream_header)*(MHeader->Streams));
+	for(int i=0;i<MHeader->Streams;i++){
+		clrstream_header * aux= &MHeader->StreamHeaders[i];
+		little32 = reinterpret_cast<support::ulittle32_t*>(MetadataIntPtr);
+		MetadataIntPtr+=sizeof(aux->offset);
+		aux->offset=*little32;
+		little32 = reinterpret_cast<support::ulittle32_t*>(MetadataIntPtr);
+		MetadataIntPtr+=sizeof(aux->size);
+		aux->size=*little32;
+		aux->name=(char*)(MetadataIntPtr);
+		MetadataIntPtr+=fixsize(strlen(aux->name)+1); // account for \0
+	}
+	initMetadataTablesSetup(MHeader);
+			
+	return object_error::success;
+}
+
 // Find the export table.
 error_code COFFObjectFile::initExportTablePtr() {
   // First, we get the RVA of the export table. If the file lacks a pointer to
@@ -510,7 +812,7 @@ COFFObjectFile::COFFObjectFile(MemoryBuffer *Object, error_code &EC,
     : ObjectFile(Binary::ID_COFF, Object, BufferOwned), COFFHeader(0),
       PE32Header(0), PE32PlusHeader(0), DataDirectory(0), SectionTable(0),
       SymbolTable(0), StringTable(0), StringTableSize(0), ImportDirectory(0),
-      NumberOfImportDirectory(0), ExportDirectory(0) {
+      NumberOfImportDirectory(0), ExportDirectory(0), CLRHeader(0), MetadataHeader(0) {
   // Check that we at least have enough room for a header.
   if (!checkSize(Data, EC, sizeof(coff_file_header))) return;
 
@@ -584,6 +886,9 @@ COFFObjectFile::COFFObjectFile(MemoryBuffer *Object, error_code &EC,
   // Initialize the pointer to the export table.
   if ((EC = initExportTablePtr()))
     return;
+
+  if ((EC = initCLRHeaderPtr()))
+	return;
 
   EC = object_error::success;
 }

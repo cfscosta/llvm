@@ -97,6 +97,149 @@ struct pe32_header {
   support::ulittle32_t NumberOfRvaAndSize;
 };
 
+namespace clrtables{
+	struct module{ // 0x00
+		support::ulittle16_t Generation;
+		support::ulittle16_t Name;
+		support::ulittle16_t Mvid;
+		support::ulittle16_t EndId;
+		support::ulittle16_t EncBaseId;
+	};
+
+	struct typeRef{
+		support::ulittle16_t ResolutionScope;
+		support::ulittle16_t TypeName;
+		support::ulittle16_t TypeNamespace;
+	};
+
+	struct typeDef{
+		support::ulittle32_t Flags;
+		support::ulittle16_t TypeName;
+		support::ulittle16_t TypeNamespace;
+		support::ulittle16_t Extends;
+		support::ulittle16_t FieldList;
+		support::ulittle16_t MethodList;
+	};
+
+	struct methodDef {
+		support::ulittle32_t RVA;
+		support::ulittle16_t ImplFlags;
+		support::ulittle16_t Flags;
+		support::ulittle16_t Name;
+		support::ulittle16_t Signature;
+		support::ulittle16_t ParamList;
+	};
+
+	struct memberRef {
+		support::ulittle16_t Class;
+		support::ulittle16_t Name;
+		support::ulittle16_t Signature;
+	};
+
+	struct standAloneSig {
+		support::ulittle16_t signature;
+	};
+
+	struct assemblyRef {
+		support::ulittle16_t MajorVersion;
+		support::ulittle16_t MinorVersion;
+		support::ulittle16_t BuildNumber;
+		support::ulittle16_t RevisionNumber;
+		support::ulittle32_t Flags;
+		support::ulittle16_t PublicKeyOrToken;
+		support::ulittle16_t Name;
+		support::ulittle16_t Culture;
+		support::ulittle16_t HashValue;
+	};
+
+	struct clrTablePtr {
+		module* Module; //0x00
+		uint32_t ModuleSize;
+		typeRef* TypeRef; //0x01
+		uint32_t TypeRefSize;
+		typeDef* TypeDef; //0x02
+		uint32_t TypeDefSize;
+		methodDef* MethodDef; //0x06
+		uint32_t MethodDefSize;
+		memberRef* MemberRef; // 0x0a
+		uint32_t MemberRefSize;
+		standAloneSig* StandAloneSig; //0x11
+		uint32_t StandAloneSigSize;
+		assemblyRef* AssemblyRef;  // 0x23
+		uint32_t AssemblyRefSize;
+	};
+}
+
+
+struct clr_header {
+	support::ulittle32_t Cb;
+	support::ulittle16_t MajorRuntimeVersion;
+	support::ulittle16_t MinorRuntimeVersion;
+	support::ulittle32_t MetadataRVA;
+	support::ulittle32_t MetadataSize;
+	support::ulittle32_t ImageFlags;
+	support::ulittle32_t EntryToken;
+	support::ulittle32_t ResourcesRVA;
+	support::ulittle32_t ResourcesSize;
+	support::ulittle64_t StrongNameSignature;
+	support::ulittle64_t CodeManagerTable;
+	support::ulittle64_t VTableFixups;
+	support::ulittle64_t ExportAddressTableJumps;
+	support::ulittle64_t ManagedNativeHeader;
+};	
+
+struct clrstream_header {
+	support::ulittle32_t offset; //0
+	support::ulittle32_t size; // <= 255 round up to multiple of 4
+	char * name;
+};
+
+struct clrmeta_tables_head {
+	support::ulittle32_t Reserved;
+	support::ulittle8_t MajorVersion;
+	support::ulittle8_t MinorVersion;
+	support::ulittle8_t heapsizes;
+	support::ulittle8_t Reservedbyte;
+	support::ulittle64_t Valid;
+	support::ulittle64_t Sorted;
+	unsigned int rowsize;
+	support::ulittle32_t * Rows;
+	clrtables::clrTablePtr tablePtr;
+};
+
+
+struct clrmeta_header {
+	uintptr_t MetadataInitPtr;
+	support::ulittle32_t Signature; //0x424a5342
+	support::ulittle16_t MajorRuntimeVersion; //1
+	support::ulittle16_t MinorRuntimeVersion; //1
+	support::ulittle32_t Reserved; //0
+	support::ulittle32_t Length; // <= 255 round up to multiple of 4
+	char * Version;
+	support::ulittle16_t Flags;
+	support::ulittle16_t Streams;
+	clrstream_header * StreamHeaders;
+	clrmeta_tables_head * MetaTables;
+};	
+
+
+error_code        initMetadataPtr(uintptr_t MetadataIntPtr, llvm::object::clrmeta_header **MetadataHeader);
+error_code		  initMetadataTablesSetup(llvm::object::clrmeta_header *MetadataHeader);
+void			  setupTablePointers(uintptr_t MetadataIntPtr, llvm::object::clrmeta_header *MetadataHeader);
+		
+
+struct stream_header {
+	support::ulittle32_t Signature; //0x424a5342
+	support::ulittle16_t MajorRuntimeVersion; //1
+	support::ulittle16_t MinorRuntimeVersion; //1
+	support::ulittle32_t Reserved; //0
+	support::ulittle32_t Length; // <= 255 round up to multiple of 4
+	char * Version;
+	support::ulittle16_t Flags;
+	support::ulittle16_t Streams;
+	clrstream_header * StreamHeaders;
+};
+
 /// The 64-bit PE header that follows the COFF header.
 struct pe32plus_header {
   support::ulittle16_t Magic;
@@ -141,6 +284,11 @@ struct import_directory_table_entry {
   support::ulittle32_t ForwarderChain;
   support::ulittle32_t NameRVA;
   support::ulittle32_t ImportAddressTableRVA;
+};
+
+struct import_address_table_entry{
+	support::ulittle16_t Hint;
+	char *name;
 };
 
 struct import_lookup_table_entry32 {
@@ -280,6 +428,8 @@ private:
   const coff_file_header *COFFHeader;
   const pe32_header      *PE32Header;
   const pe32plus_header  *PE32PlusHeader;
+  const clr_header       *CLRHeader;
+  clrmeta_header   *MetadataHeader;
   const data_directory   *DataDirectory;
   const coff_section     *SectionTable;
   const coff_symbol      *SymbolTable;
@@ -295,9 +445,11 @@ private:
   const coff_section     *toSec(DataRefImpl Sec) const;
   const coff_relocation  *toRel(DataRefImpl Rel) const;
 
+		error_code        initExportTablePtr();
         error_code        initSymbolTablePtr();
         error_code        initImportTablePtr();
-        error_code        initExportTablePtr();
+		error_code        initCLRHeaderPtr();
+		bool isPureCil();
 
 protected:
   void moveSymbolNext(DataRefImpl &Symb) const LLVM_OVERRIDE;
@@ -367,7 +519,7 @@ public:
   library_iterator needed_library_end() const LLVM_OVERRIDE;
   section_iterator section_begin() const LLVM_OVERRIDE;
   section_iterator section_end() const LLVM_OVERRIDE;
-
+  const clrmeta_header * getMetadataHeader() const { return MetadataHeader;}
   const coff_section *getCOFFSection(section_iterator &It) const;
   const coff_symbol *getCOFFSymbol(symbol_iterator &It) const;
   const coff_relocation *getCOFFRelocation(relocation_iterator &It) const;
@@ -376,13 +528,14 @@ public:
   StringRef getFileFormatName() const LLVM_OVERRIDE;
   unsigned getArch() const LLVM_OVERRIDE;
   StringRef getLoadName() const LLVM_OVERRIDE;
-
+  
   import_directory_iterator import_directory_begin() const;
   import_directory_iterator import_directory_end() const;
   export_directory_iterator export_directory_begin() const;
   export_directory_iterator export_directory_end() const;
 
   error_code getHeader(const coff_file_header *&Res) const;
+
   error_code getCOFFHeader(const coff_file_header *&Res) const;
   error_code getPE32Header(const pe32_header *&Res) const;
   error_code getPE32PlusHeader(const pe32plus_header *&Res) const;
@@ -405,6 +558,7 @@ public:
 
   error_code getVaPtr(uint64_t VA, uintptr_t &Res) const;
   error_code getRvaPtr(uint32_t Rva, uintptr_t &Res) const;
+  error_code getMethodSize(uintptr_t method, unsigned int &size) const ;
   error_code getHintName(uint32_t Rva, uint16_t &Hint, StringRef &Name) const;
 
   static inline bool classof(const Binary *v) {
